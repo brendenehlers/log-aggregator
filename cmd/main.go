@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -17,20 +18,38 @@ func main() {
 
 	fmt.Println("hello")
 
-	f, err := os.Open("/var/log/pods/default_counter_9aad6fe0-3cb3-451c-80d8-b6d107cc1fd2/count/0.log")
+	// this one for kind
+	// fp := "var/log/pods/default_counter_9aad6fe0-3cb3-451c-80d8-b6d107cc1fd2/count/0.log"
+	// this one for local
+	fp := "var/log/pods/default_counter_1544cea7-4641-4a3b-9ccb-702d941295b3/count/0.log"
+	infiniteReadFile(fp)
+}
+
+func infiniteReadFile(filename string) (error) {
+
+	f, err := os.Open(filename)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	defer f.Close()
 
-	s := bufio.NewScanner(f)
 	for true {
-		s.Scan()
-		txt := s.Text()
-		if txt == "" { continue }
-		criLog := parseLog(txt)
-		fmt.Println(criLog)
+		s := bufio.NewScanner(f)
+		// read lines from file and prints the parsed criLog
+		for s.Scan() {
+			txt := s.Text()
+			if txt == "" { continue }
+			criLog := parseLog(txt)
+			fmt.Println(criLog)
+		}
+		// panic if err != EOF
+		if err := s.Err(); err != nil {
+			return err
+		}
+		// wait for more logs
+		time.Sleep(1 * time.Second)
 	}
+	return nil
 }
 
 type criLog struct {

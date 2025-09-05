@@ -13,5 +13,5 @@ spec:
     image: behlers22/log-aggregator:latest
     volumeMounts:
       - name: logs-path
-        mountPath: /var/log/pods
+        mountPath: /usr/app/var/log/pods
 
