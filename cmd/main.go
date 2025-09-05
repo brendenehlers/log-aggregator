@@ -18,12 +18,8 @@ func main() {
 	defer d.Close()
 
 	// get pod refs /var/log/pods
-	pods, err := d.ReadDir(-1)
+	podNames, err := d.Readdirnames(-1)
 	if err != nil { panic(err) }
-	podNames := make([]string, 0, len(pods))
-	for _, pod := range pods {
-		podNames = append(podNames, pod.Name())
-	}
 
 	ctx := context.Background()
 	for _, name := range podNames {
@@ -31,14 +27,20 @@ func main() {
 		podDir := base + "/" + name
 		pd, err := os.Open(podDir)
 		if err != nil { panic(err) }
+		defer pd.Close()
 
 		// get containers in the pod
-		cs, err := pd.ReadDir(-1)
+		cs, err := pd.Readdirnames(-1)
 		if err != nil { panic(err) }
 		for _, c := range cs {
 			// read log file of container
+			cDir, err := os.Open(podDir + "/" + c)
+			if err != nil { panic(err) }
+			defer cDir.Close()
+
 			// TODO put this section in a goroutine and read everything back via a channel
-			log := podDir + "/" + c.Name() + "/0.log"
+			instances, err := cDir.Readdirnames(-1)
+			log := podDir + "/" + c + "/" + instances[0] // TODO verify k8s will only create 1 file in this dir
 			err = infiniteReadFile(ctx, log)
 			if err != nil { panic(err) }
 		}
