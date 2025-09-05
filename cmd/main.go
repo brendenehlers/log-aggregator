@@ -54,7 +54,7 @@ func infiniteReadFile(ctx context.Context, filename string) (error) {
 	}
 	defer f.Close()
 
-	for true {
+	for {
 		s := bufio.NewScanner(f)
 		// read lines from file and prints the parsed criLog
 		for s.Scan() {
@@ -63,12 +63,18 @@ func infiniteReadFile(ctx context.Context, filename string) (error) {
 			criLog := parseLog(txt)
 			fmt.Println(criLog)
 		}
-		// panic if err != EOF
+		// error out if err != EOF
 		if err := s.Err(); err != nil {
 			return err
 		}
-		// wait for more logs
-		time.Sleep(1 * time.Second)
+		// listen for context clues
+		select {
+		case <- ctx.Done():
+			return ctx.Err()
+		default:
+			// wait for more logs
+			time.Sleep(1 * time.Second)
+		}
 	}
 	return nil
 }
@@ -82,7 +88,6 @@ type criLog struct {
 
 func parseLog(log string) (criLog) {
 	// 2025-09-05T01:25:22.667941074Z stdout F 132: Fri Sep  5 01:25:22 UTC 2025
-	fmt.Println(log)
 	strs := strings.SplitN(log, " ", 4)
 	return criLog {
 		Content: strs[3],
