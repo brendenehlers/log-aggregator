@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: log-pod
+spec:
+  volumes:
+    - name: logs-path
+      hostPath:
+        path: /var/log/pods
+        type: DirectoryOrCreate
+  containers:
+  - name: log
+    image: behlers22/log-aggregator:latest
+    volumeMounts:
+      - name: logs-path
+        mountPath: /var/log/pods
+

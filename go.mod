@@ -1,3 +1,3 @@
-module com.behlers.log-aggregator
+module logger
 
 go 1.25.1
