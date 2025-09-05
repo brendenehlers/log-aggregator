@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strings"
 )
 
 func main() {
@@ -24,14 +25,25 @@ func main() {
 
 	s := bufio.NewScanner(f)
 	for s.Scan() {
-		fmt.Println("next line:")
-		fmt.Println(s.Text())
+		criLog := parseLog(s.Text())
+		fmt.Println(criLog)
 	}
 }
 
-type cri struct {
-	content   string
-	stream    string
-	flags     rune
-	timestamp string
+type criLog struct {
+	Content   string
+	Stream    string
+	Flags     string
+	Timestamp string
+}
+
+func parseLog(log string) (criLog) {
+	// 2025-09-05T01:25:22.667941074Z stdout F 132: Fri Sep  5 01:25:22 UTC 2025
+	strs := strings.SplitN(log, " ", 4)
+	return criLog {
+		Content: strs[3],
+		Stream: strs[1],
+		Flags: strs[2],
+		Timestamp: strs[0],
+	}
 }
