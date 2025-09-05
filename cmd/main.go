@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"context"
 )
 
 func main() {
@@ -24,6 +25,7 @@ func main() {
 		podNames = append(podNames, pod.Name())
 	}
 
+	ctx := context.Background()
 	for _, name := range podNames {
 		// var/log/pods/<pod ref>/<container-name>/0.log
 		podDir := base + "/" + name
@@ -37,14 +39,13 @@ func main() {
 			// read log file of container
 			// TODO put this section in a goroutine and read everything back via a channel
 			log := podDir + "/" + c.Name() + "/0.log"
-			err = infiniteReadFile(log)
+			err = infiniteReadFile(ctx, log)
 			if err != nil { panic(err) }
 		}
 	}
 }
 
-func infiniteReadFile(filename string) (error) {
-
+func infiniteReadFile(ctx context.Context, filename string) (error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return err
