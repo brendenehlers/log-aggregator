@@ -9,20 +9,38 @@ import (
 )
 
 func main() {
-	// TODO point this back to /var when running in k8s
-	/*
-		const podLogDir string = "var/log/pods/"
-		podName := "default_counter_1544cea7-4641-4a3b-9ccb-702d941295b3"
-		logName := "0.log"
-	*/
-
 	fmt.Println("hello")
 
-	// this one for kind
-	// fp := "var/log/pods/default_counter_9aad6fe0-3cb3-451c-80d8-b6d107cc1fd2/count/0.log"
-	// this one for local
-	fp := "var/log/pods/default_counter_1544cea7-4641-4a3b-9ccb-702d941295b3/count/0.log"
-	infiniteReadFile(fp)
+	base := "var/log/pods"
+	d, err := os.Open(base)
+	if err != nil { panic(err) }
+	defer d.Close()
+
+	// get pod refs /var/log/pods
+	pods, err := d.ReadDir(-1)
+	if err != nil { panic(err) }
+	podNames := make([]string, 0, len(pods))
+	for _, pod := range pods {
+		podNames = append(podNames, pod.Name())
+	}
+
+	for _, name := range podNames {
+		// var/log/pods/<pod ref>/<container-name>/0.log
+		podDir := base + "/" + name
+		pd, err := os.Open(podDir)
+		if err != nil { panic(err) }
+
+		// get containers in the pod
+		cs, err := pd.ReadDir(-1)
+		if err != nil { panic(err) }
+		for _, c := range cs {
+			// read log file of container
+			// TODO put this section in a goroutine and read everything back via a channel
+			log := podDir + "/" + c.Name() + "/0.log"
+			err = infiniteReadFile(log)
+			if err != nil { panic(err) }
+		}
+	}
 }
 
 func infiniteReadFile(filename string) (error) {
