@@ -13,41 +13,62 @@ func main() {
 	fmt.Println("hello")
 
 	base := "var/log/pods"
-	d, err := os.Open(base)
-	if err != nil { panic(err) }
-	defer d.Close()
-
-	// get pod refs /var/log/pods
-	podNames, err := d.Readdirnames(-1)
-	if err != nil { panic(err) }
-
 	ctx := context.Background()
-	for _, name := range podNames {
-		// var/log/pods/<pod ref>/<container-name>/0.log
-		podDir := base + "/" + name
-		pd, err := os.Open(podDir)
-		if err != nil { panic(err) }
-		defer pd.Close()
+	outChan := make(chan criLog, 100)
+	err := createReaderRoutines(ctx, base, outChan)
+	if err != nil { panic(err) }
 
-		// get containers in the pod
-		cs, err := pd.Readdirnames(-1)
-		if err != nil { panic(err) }
-		for _, c := range cs {
-			// read log file of container
-			cDir, err := os.Open(podDir + "/" + c)
-			if err != nil { panic(err) }
-			defer cDir.Close()
-
-			// TODO put this section in a goroutine and read everything back via a channel
-			instances, err := cDir.Readdirnames(-1)
-			log := podDir + "/" + c + "/" + instances[0] // TODO verify k8s will only create 1 file in this dir
-			err = infiniteReadFile(ctx, log)
-			if err != nil { panic(err) }
+	// wait for results
+	for {
+		select {
+		case log := <-outChan:
+			fmt.Println(log)
+		case <-ctx.Done():
+			panic(ctx.Err())
 		}
 	}
 }
 
-func infiniteReadFile(ctx context.Context, filename string) (error) {
+func createReaderRoutines(ctx context.Context, base string, out chan<- criLog) (error) {
+	d, err := os.Open(base)
+	if err != nil { return err }
+	defer d.Close()
+
+	// get pod refs /var/log/pods
+	podNames, err := d.Readdirnames(-1)
+	if err != nil { return err }
+
+	for _, name := range podNames {
+		// TODO remove this--temp to skip this pod's logs
+		if strings.Contains(name, "log-pod") { continue }
+		// var/log/pods/<pod ref>/<container-name>/<instance#>.log
+		podDir := base + "/" + name
+		pd, err := os.Open(podDir)
+		if err != nil { return err }
+		defer pd.Close()
+
+		// get containers in the pod
+		cs, err := pd.Readdirnames(-1)
+		if err != nil { return err }
+		for _, c := range cs {
+			// read log file of container
+			cDir, err := os.Open(podDir + "/" + c)
+			if err != nil { return err }
+			defer cDir.Close()
+
+			instances, err := cDir.Readdirnames(-1)
+			if len(instances) < 1 { continue }
+			log := podDir + "/" + c + "/" + instances[0] // TODO verify k8s will only create 1 file in this dir
+			go func() {
+				err = infiniteReadFile(ctx, log, out)
+				if err != nil { panic(err) }
+			}()
+		}
+	}
+	return nil
+}
+
+func infiniteReadFile(ctx context.Context, filename string, out chan<- criLog) (error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return err
@@ -61,7 +82,7 @@ func infiniteReadFile(ctx context.Context, filename string) (error) {
 			txt := s.Text()
 			if txt == "" { continue }
 			criLog := parseLog(txt)
-			fmt.Println(criLog)
+			out <- criLog
 		}
 		// error out if err != EOF
 		if err := s.Err(); err != nil {
