@@ -14,7 +14,7 @@ func main() {
 
 	base := "var/log/pods"
 	ctx := context.Background()
-	outChan := make(chan criLog, 100)
+	outChan := make(chan *LogWithMetadata, 100)
 	err := createReaderRoutines(ctx, base, outChan)
 	if err != nil { panic(err) }
 
@@ -29,7 +29,7 @@ func main() {
 	}
 }
 
-func createReaderRoutines(ctx context.Context, base string, out chan<- criLog) (error) {
+func createReaderRoutines(ctx context.Context, base string, out chan<- *LogWithMetadata) (error) {
 	d, err := os.Open(base)
 	if err != nil { return err }
 	defer d.Close()
@@ -47,6 +47,7 @@ func createReaderRoutines(ctx context.Context, base string, out chan<- criLog) (
 		if err != nil { return err }
 		defer pd.Close()
 
+
 		// get containers in the pod
 		cs, err := pd.Readdirnames(-1)
 		if err != nil { return err }
@@ -59,8 +60,9 @@ func createReaderRoutines(ctx context.Context, base string, out chan<- criLog) (
 			instances, err := cDir.Readdirnames(-1)
 			if len(instances) < 1 { continue }
 			log := podDir + "/" + c + "/" + instances[0] // TODO verify k8s will only create 1 file in this dir
+			metadata := parseMetadata(name, c, strings.Split(instances[0], ".")[0])
 			go func() {
-				err = infiniteReadFile(ctx, log, out)
+				err = infiniteReadFile(ctx, log, out, metadata)
 				if err != nil { panic(err) }
 			}()
 		}
@@ -68,7 +70,21 @@ func createReaderRoutines(ctx context.Context, base string, out chan<- criLog) (
 	return nil
 }
 
-func infiniteReadFile(ctx context.Context, filename string, out chan<- criLog) (error) {
+func parseMetadata(pod, container, instance string) (Metadata) {
+	// default_counter_1544cea7-4641-4a3b-9ccb-702d941295b3
+	// TODO validate the structure of the dir
+	// TODO are underscores allowed in pod names?
+	chunks := strings.Split(pod, "_")
+	return Metadata {
+		Namespace: chunks[0],
+		PodName: chunks[1],
+		PodId: chunks[2],
+		Container: container,
+		Instance: instance,
+	}
+}
+
+func infiniteReadFile(ctx context.Context, filename string, out chan<- *LogWithMetadata, metadata Metadata) (error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return err
@@ -77,12 +93,15 @@ func infiniteReadFile(ctx context.Context, filename string, out chan<- criLog) (
 
 	for {
 		s := bufio.NewScanner(f)
-		// read lines from file and prints the parsed criLog
+		// read lines from file and prints the parsed CriLog
 		for s.Scan() {
 			txt := s.Text()
 			if txt == "" { continue }
 			criLog := parseLog(txt)
-			out <- criLog
+			out <- &LogWithMetadata {
+				Log: criLog,
+				Metadata: metadata,
+			}
 		}
 		// error out if err != EOF
 		if err := s.Err(); err != nil {
@@ -100,17 +119,30 @@ func infiniteReadFile(ctx context.Context, filename string, out chan<- criLog) (
 	return nil
 }
 
-type criLog struct {
+type LogWithMetadata struct {
+	Log CriLog
+	Metadata Metadata
+}
+
+type Metadata struct {
+	Namespace string
+	PodName string
+	PodId string
+	Container string
+	Instance string	
+}
+
+type CriLog struct {
 	Content   string
 	Stream    string
 	Flags     string
 	Timestamp string
 }
 
-func parseLog(log string) (criLog) {
+func parseLog(log string) (CriLog) {
 	// 2025-09-05T01:25:22.667941074Z stdout F 132: Fri Sep  5 01:25:22 UTC 2025
 	strs := strings.SplitN(log, " ", 4)
-	return criLog {
+	return CriLog {
 		Content: strs[3],
 		Stream: strs[1],
 		Flags: strs[2],
