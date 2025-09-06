@@ -10,7 +10,7 @@ import (
 
 	grpclog "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
-	"go.opentelemetry.io/otel/log"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 func main() {
@@ -47,8 +47,28 @@ func configureProvider(ctx context.Context, endpoint string) (*sdklog.LoggerProv
 	return provider, nil
 }
 
-func handle(ctx context.Context, logger log.Logger, log *LogWithMetadata) {
-	fmt.Println(log) // TODO remove this
+func handle(ctx context.Context, logger otellog.Logger, log *LogWithMetadata) {
+	record := otellog.Record{}
+	// TODO parse this from the log itself
+	var sev otellog.Severity
+	var sevText string
+	if log.Log.Stream == Stderr {
+		sev = otellog.SeverityError1
+		sevText = "ERROR"
+	} else {
+		sev = otellog.SeverityInfo1
+		sevText = "INFO"
+	}
+	record.SetSeverity(sev)
+	record.SetSeverityText(sevText)
+
+	record.SetTimestamp(log.Log.Timestamp)
+	record.SetObservedTimestamp(time.Now())
+
+	record.SetBody(otellog.StringValue(log.Log.Content))
+
+	fmt.Println("emitting record")
+	logger.Emit(ctx, record)
 }
 
 func createReaderRoutines(ctx context.Context, base string, out chan<- *LogWithMetadata) (error) {
@@ -56,6 +76,7 @@ func createReaderRoutines(ctx context.Context, base string, out chan<- *LogWithM
 	if err != nil { return err }
 	defer d.Close()
 
+	// TODO somewhere in here create a watch on the /var/lib/pods directory for new pods and containers
 	// get pod refs /var/log/pods
 	podNames, err := d.Readdirnames(-1)
 	if err != nil { return err }
