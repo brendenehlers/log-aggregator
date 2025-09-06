@@ -7,26 +7,53 @@ import (
 	"strings"
 	"time"
 	"context"
+
+	grpclog "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
+	"go.opentelemetry.io/otel/log"
 )
 
 func main() {
 	fmt.Println("hello")
+	ctx := context.Background()
+
+	provider, err := configureProvider(ctx, "grafana:4317")
+	if err != nil { panic(err) }
+	defer func() { if err := provider.Shutdown(ctx); err != nil { panic(err) } }()
+	logger := provider.Logger("com.behlers.log_scraper")
 
 	base := "var/log/pods"
-	ctx := context.Background()
 	outChan := make(chan *LogWithMetadata, 100)
-	err := createReaderRoutines(ctx, base, outChan)
+	err = createReaderRoutines(ctx, base, outChan)
 	if err != nil { panic(err) }
 
 	// wait for results
 	for {
 		select {
 		case log := <-outChan:
-			fmt.Println(log)
+			handle(ctx, logger, log)
 		case <-ctx.Done():
-			panic(ctx.Err())
+			if err := ctx.Err(); err != nil { panic(ctx.Err()) } else { break }
 		}
 	}
+}
+
+func configureProvider(ctx context.Context, endpoint string) (*sdklog.LoggerProvider, error) {
+	// configure otel logging exporter
+	exp, err := grpclog.New(ctx, grpclog.WithEndpoint(endpoint), grpclog.WithInsecure())
+	if err != nil { return nil, err }
+	processor := sdklog.NewBatchProcessor(exp)
+	provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(processor))
+	return provider, nil
+}
+
+func handle(ctx context.Context, logger log.Logger, log *LogWithMetadata) {
+	fmt.Println(log) // TODO remove this
+	/* 
+	send to otel collector (grafana)
+	- see all logs in a dashboard
+	- need to call otel endpoint (grpc or http/protobuf)
+	*/
 }
 
 func createReaderRoutines(ctx context.Context, base string, out chan<- *LogWithMetadata) (error) {
@@ -46,7 +73,6 @@ func createReaderRoutines(ctx context.Context, base string, out chan<- *LogWithM
 		pd, err := os.Open(podDir)
 		if err != nil { return err }
 		defer pd.Close()
-
 
 		// get containers in the pod
 		cs, err := pd.Readdirnames(-1)
