@@ -162,20 +162,40 @@ type Metadata struct {
 
 type CriLog struct {
 	Content   string
-	Stream    string
+	Stream    LogStream
 	Flags     string
 	Timestamp time.Time
 }
 
+type LogStream int
+const (
+	Stdout LogStream = iota
+	Stderr
+)
+
 func parseLog(log string) (CriLog, error) {
 	// 2025-09-05T01:25:22.667941074Z stdout F 132: Fri Sep  5 01:25:22 UTC 2025
 	strs := strings.SplitN(log, " ", 4)
+	stream, err := parseStream(strs[1])
+	if err != nil { return CriLog{}, err }
 	time, err := time.Parse(time.RFC3339Nano, strs[0])
 	if err != nil { return CriLog{}, err }
 	return CriLog {
 		Content: strs[3],
-		Stream: strs[1],
+		Stream: stream,
 		Flags: strs[2],
 		Timestamp: time,
 	}, nil
+}
+
+func parseStream(stream string) (LogStream, error) {
+	switch (stream) {
+	case "stdout":
+		return Stdout, nil
+	case "stderr":
+		return Stderr, nil
+	default:
+		// TODO replace this error
+		panic("unsupported log type")
+	}
 }
