@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"strconv"
 	"time"
 	"context"
 
@@ -67,7 +68,14 @@ func handle(ctx context.Context, logger otellog.Logger, log *LogWithMetadata) {
 
 	record.SetBody(otellog.StringValue(log.Log.Content))
 
-	fmt.Println("emitting record")
+	record.AddAttributes(
+		otellog.String("k8s.namespace.name", log.Metadata.Namespace),
+		otellog.String("k8s.pod.name", log.Metadata.PodName),
+		otellog.String("k8s.pod.uid", log.Metadata.PodId),
+		otellog.String("k8s.container.name", log.Metadata.Container),
+		otellog.Int("k8s.container.restart_count", log.Metadata.Restarts),
+	)
+
 	logger.Emit(ctx, record)
 }
 
@@ -82,8 +90,6 @@ func createReaderRoutines(ctx context.Context, base string, out chan<- *LogWithM
 	if err != nil { return err }
 
 	for _, name := range podNames {
-		// TODO remove this--temp to skip this pod's logs
-		if strings.Contains(name, "log-pod") { continue }
 		// var/log/pods/<pod ref>/<container-name>/<instance#>.log
 		podDir := base + "/" + name
 		pd, err := os.Open(podDir)
@@ -102,7 +108,9 @@ func createReaderRoutines(ctx context.Context, base string, out chan<- *LogWithM
 			instances, err := cDir.Readdirnames(-1)
 			if len(instances) < 1 { continue }
 			log := podDir + "/" + c + "/" + instances[0] // TODO verify k8s will only create 1 file in this dir
-			metadata := parseMetadata(name, c, strings.Split(instances[0], ".")[0])
+			restarts, err := strconv.Atoi(strings.Split(instances[0], ".")[0])
+			if err != nil { return err }
+			metadata := parseMetadata(name, c, restarts)
 			go func() {
 				err = infiniteReadFile(ctx, log, out, metadata)
 				if err != nil { panic(err) }
@@ -112,7 +120,7 @@ func createReaderRoutines(ctx context.Context, base string, out chan<- *LogWithM
 	return nil
 }
 
-func parseMetadata(pod, container, instance string) (Metadata) {
+func parseMetadata(pod, container string, restarts int) (Metadata) {
 	// default_counter_1544cea7-4641-4a3b-9ccb-702d941295b3
 	// TODO validate the structure of the dir
 	// TODO are underscores allowed in pod names?
@@ -122,7 +130,7 @@ func parseMetadata(pod, container, instance string) (Metadata) {
 		PodName: chunks[1],
 		PodId: chunks[2],
 		Container: container,
-		Instance: instance,
+		Restarts: restarts,
 	}
 }
 
@@ -178,7 +186,7 @@ type Metadata struct {
 	PodName string
 	PodId string
 	Container string
-	Instance string	
+	Restarts int	
 }
 
 type CriLog struct {
