@@ -49,11 +49,6 @@ func configureProvider(ctx context.Context, endpoint string) (*sdklog.LoggerProv
 
 func handle(ctx context.Context, logger log.Logger, log *LogWithMetadata) {
 	fmt.Println(log) // TODO remove this
-	/* 
-	send to otel collector (grafana)
-	- see all logs in a dashboard
-	- need to call otel endpoint (grpc or http/protobuf)
-	*/
 }
 
 func createReaderRoutines(ctx context.Context, base string, out chan<- *LogWithMetadata) (error) {
@@ -110,7 +105,12 @@ func parseMetadata(pod, container, instance string) (Metadata) {
 	}
 }
 
-func infiniteReadFile(ctx context.Context, filename string, out chan<- *LogWithMetadata, metadata Metadata) (error) {
+func infiniteReadFile(
+	ctx context.Context,
+	filename string,
+	out chan<- *LogWithMetadata,
+	metadata Metadata,
+) (error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return err
@@ -123,7 +123,9 @@ func infiniteReadFile(ctx context.Context, filename string, out chan<- *LogWithM
 		for s.Scan() {
 			txt := s.Text()
 			if txt == "" { continue }
-			criLog := parseLog(txt)
+			criLog, err := parseLog(txt)
+			// TODO think about recovering from error here
+			if err != nil { return err }
 			out <- &LogWithMetadata {
 				Log: criLog,
 				Metadata: metadata,
@@ -162,16 +164,18 @@ type CriLog struct {
 	Content   string
 	Stream    string
 	Flags     string
-	Timestamp string
+	Timestamp time.Time
 }
 
-func parseLog(log string) (CriLog) {
+func parseLog(log string) (CriLog, error) {
 	// 2025-09-05T01:25:22.667941074Z stdout F 132: Fri Sep  5 01:25:22 UTC 2025
 	strs := strings.SplitN(log, " ", 4)
+	time, err := time.Parse(time.RFC3339Nano, strs[0])
+	if err != nil { return CriLog{}, err }
 	return CriLog {
 		Content: strs[3],
 		Stream: strs[1],
 		Flags: strs[2],
-		Timestamp: strs[0],
-	}
+		Timestamp: time,
+	}, nil
 }
