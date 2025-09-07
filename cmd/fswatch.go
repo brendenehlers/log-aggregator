@@ -6,6 +6,9 @@ import (
 	"io/fs"
 	"log"
 	"time"
+	"bytes"
+	"io"
+	"bufio"
 )
 
 func main() {
@@ -14,7 +17,8 @@ func main() {
 	root := "tmp"
 	fSystem := os.DirFS(root)
 	// file offsets will live outside hot loop, eventually connected to some sort of persistant database
-	fileOffsets := make(map[string]int)
+	// offset is in bytes
+	fileOffsets := make(map[string]int64)
 	
 	for {
 		files := make(map[string] interface{})
@@ -28,18 +32,58 @@ func main() {
 		})
 
 		// reconcile files with file offsets
-		fileOffsets = reconcileFileOffsets(files, fileOffsets)
+		reconcileFileOffsets(files, fileOffsets)
 
-		for k, v := range fileOffsets {
-			fileOffsets[k] = v + 1
-			fmt.Println(k, fileOffsets[k])
+		for file, offset := range fileOffsets {
+			newOffset, lines, err := readFileAtOffset(root + "/" + file, offset)
+			if err != nil { panic(err) }
+			fileOffsets[file] = newOffset
+			fmt.Println(lines)
 		}
 
 		time.Sleep(time.Second)
 	}
 }
 
-func reconcileFileOffsets(files map[string]interface{}, fileOffsets map[string]int) (map[string]int) {
+func readLinesAt(file string, off int64) (int64, []string, error) {
+	f, err := os.Open(file)
+	if err != nil { return 0, nil, err }
+	defer f.Close()
+	
+	offset := off
+	var buf bytes.Buffer
+	b := make([]byte, 1024)
+	for {
+		n, err := f.ReadAt(b, offset)
+		read := int64(n)
+		if err != nil {
+			if err != io.EOF {
+				return 0, nil, err
+			}
+			// handle ending data
+			if read > 0 {
+				// only write populated section of b to buffer
+				buf.Write(b[0:read])
+				offset = offset + read
+			}
+			break
+		}
+		buf.Write(b)
+		offset = offset + read
+	}
+
+	s := bufio.NewScanner(bytes.NewReader(buf.Bytes()))
+
+	lines := make([]string, 0, 10)
+	for s.Scan() {
+		line := s.Text()
+		lines = append(lines, line)
+	}
+
+	return offset, lines, nil
+}
+
+func reconcileFileOffsets(files map[string]interface{}, fileOffsets map[string]int64) {
 	// TODO there's gotta be a better way
 	// remove deleted files
 	// this has to come first, new files are added with an offset of 0
@@ -56,6 +100,4 @@ func reconcileFileOffsets(files map[string]interface{}, fileOffsets map[string]i
 			fileOffsets[k] = 0
 		}
 	}
-
-	return fileOffsets
 }
