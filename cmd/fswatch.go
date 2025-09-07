@@ -8,7 +8,6 @@ import (
 	"time"
 	"bytes"
 	"io"
-	"bufio"
 )
 
 func main() {
@@ -35,17 +34,19 @@ func main() {
 		reconcileFileOffsets(files, fileOffsets)
 
 		for file, offset := range fileOffsets {
-			newOffset, lines, err := readFileAtOffset(root + "/" + file, offset)
+			newOffset, r, err := readLinesAt(root + "/" + file, offset)
 			if err != nil { panic(err) }
 			fileOffsets[file] = newOffset
-			fmt.Println(lines)
+			bytes, err := io.ReadAll(r)
+			if err != nil { panic(err) }
+			fmt.Println(string(bytes))
 		}
 
 		time.Sleep(time.Second)
 	}
 }
 
-func readLinesAt(file string, off int64) (int64, []string, error) {
+func readLinesAt(file string, off int64) (int64, io.Reader, error) {
 	f, err := os.Open(file)
 	if err != nil { return 0, nil, err }
 	defer f.Close()
@@ -72,15 +73,8 @@ func readLinesAt(file string, off int64) (int64, []string, error) {
 		offset = offset + read
 	}
 
-	s := bufio.NewScanner(bytes.NewReader(buf.Bytes()))
-
-	lines := make([]string, 0, 10)
-	for s.Scan() {
-		line := s.Text()
-		lines = append(lines, line)
-	}
-
-	return offset, lines, nil
+	r := bytes.NewReader(buf.Bytes())
+	return offset, r, nil
 }
 
 func reconcileFileOffsets(files map[string]interface{}, fileOffsets map[string]int64) {
