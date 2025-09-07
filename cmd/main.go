@@ -1,9 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io"
-	"bytes"
 	"bufio"
 	"fmt"
 	"os"
@@ -100,6 +100,12 @@ func main() {
 	}
 }
 
+type fileRef struct {
+	File string
+	Offset int64
+	CancelFunc context.CancelFunc
+}
+
 type readerResult struct {
 	Metadata Metadata
 	File string
@@ -130,6 +136,37 @@ func fileReader(
 			Reader: r,
 		}
 	}
+}
+
+func readerAt(ctx context.Context, file string, off int64) (int64, io.Reader, error) {
+	f, err := os.Open(file)
+	if err != nil { return 0, nil, err }
+	defer f.Close()
+	
+	offset := off
+	var buf bytes.Buffer
+	b := make([]byte, 1024)
+	for {
+		n, err := f.ReadAt(b, offset)
+		read := int64(n)
+		if err != nil {
+			if err != io.EOF {
+				return 0, nil, err
+			}
+			// handle ending data
+			if read > 0 {
+				// only write populated section of b to buffer
+				buf.Write(b[0:read])
+				offset = offset + read
+			}
+			break
+		}
+		buf.Write(b)
+		offset = offset + read
+	}
+
+	r := bytes.NewReader(buf.Bytes())
+	return offset, r, nil
 }
 
 func configureProvider(ctx context.Context, endpoint string) (*sdklog.LoggerProvider, error) {
