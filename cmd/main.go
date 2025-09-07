@@ -76,14 +76,17 @@ func main() {
 
 		// reconcile files with file offsets
 		// TODO cancel goroutines that are deleted
-		added, _ := reconcileFileOffsets(files, refs)
+		added, deleted := reconcileFileOffsets(files, refs)
 
+		// handle added files
 		for _, file := range added {
+			newCtx, cancel := context.WithCancel(ctx)
 			offset := refs[file].Offset
+			refs[file].CancelFunc = cancel
 			go func() {
 				metadata, err := parseMetadata(file)
 				if err != nil { panic(err) }
-				err = fileReader(ctx, root, file, offset, out, metadata)
+				err = fileReader(newCtx, root, file, offset, out, metadata)
 				if err != nil { 
 					// file was deleted, no need to process it anymore
 					if errors.Is(err, fs.ErrNotExist) {
@@ -91,9 +94,22 @@ func main() {
 						return
 					}
 
+					if errors.Is(err, context.Canceled) {
+						log.Println("context cancelled", err)
+						return
+					}
+
 					panic(err)
 				}
 			}()
+			refs[file].CancelFunc()
+		}
+
+		// handle deleted files
+		for _, file := range deleted {
+			// TODO figure out if this is even needed. might be easier to have the fileReader end with the missing file
+			refs[file].CancelFunc()
+			delete(refs, file)
 		}
 
 		time.Sleep(time.Second)
@@ -123,17 +139,22 @@ func fileReader(
 	oldOffset := offset
 	for {
 		offset, r, err := readerAt(ctx, root + "/" + file, oldOffset)
-		if oldOffset == offset {
-			time.Sleep(time.Second)
-			continue
-		}
-		oldOffset = offset
 		if err != nil { return err }
-		out <- readerResult{
-			Metadata: metadata,
-			File: file,
-			Offset: offset,
-			Reader: r,
+		if oldOffset != offset {
+			oldOffset = offset
+			out <- readerResult{
+				Metadata: metadata,
+				File: file,
+				Offset: offset,
+				Reader: r,
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			time.Sleep(time.Second)
 		}
 	}
 }
