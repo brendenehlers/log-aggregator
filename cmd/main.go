@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"io"
+	"bytes"
 	"bufio"
 	"fmt"
 	"os"
@@ -8,6 +11,8 @@ import (
 	"strconv"
 	"time"
 	"context"
+	"io/fs"
+	"log"
 
 	grpclog "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -18,23 +23,111 @@ func main() {
 	fmt.Println("hello")
 	ctx := context.Background()
 
-	provider, err := configureProvider(ctx, "grafana:4317")
-	if err != nil { panic(err) }
-	defer func() { if err := provider.Shutdown(ctx); err != nil { panic(err) } }()
-	logger := provider.Logger("com.behlers.log_scraper")
+	root := "var/log/pods"
+	//root := "tmp"
+	out := make(chan readerResult)
 
-	base := "var/log/pods"
-	outChan := make(chan *LogWithMetadata, 100)
-	err = createReaderRoutines(ctx, base, outChan)
-	if err != nil { panic(err) }
+	fSystem := os.DirFS(root)
+	// file offsets will live outside hot loop, eventually connected to some sort of persistant database
+	// offset is in bytes
+	fileOffsets := make(map[string]int64)
 
-	// wait for results
+	go func() {
+		provider, err := configureProvider(ctx, "grafana:4317")
+		if err != nil { panic(err) }
+		defer func() { if err := provider.Shutdown(ctx); err != nil { panic(err) } }()
+		logger := provider.Logger("com.behlers.log_scraper")
+
+		// reads from channel and processes new logs
+		for {
+			select {
+			case result := <-out:
+				log.Println("got messsage from", result.File)
+				// TODO this is really bad, change it be better
+				// save current file offsets
+				fileOffsets[result.File] = result.Offset
+
+				s := bufio.NewScanner(result.Reader)
+				for s.Scan() {
+					t := s.Text()
+					if t == "" { continue }
+					criLog, err := parseLog(t)
+					// TODO think about recovering from error here
+					if err != nil { panic(err) }
+					handle(ctx, logger, result.Metadata, criLog)				
+				}
+			default:
+				break
+			}
+		}
+	}()
+
 	for {
-		select {
-		case log := <-outChan:
-			handle(ctx, logger, log)
-		case <-ctx.Done():
-			if err := ctx.Err(); err != nil { panic(ctx.Err()) } else { break }
+		// get the files in the root directory
+		files := make(map[string] interface{})
+		fs.WalkDir(fSystem, ".", func (path string, d fs.DirEntry, err error) error {
+			if err != nil { log.Fatal(err) }
+			if d.IsDir() { return nil }
+			if f := files[path]; f == nil {
+				files[path] = 0
+			}
+			return nil
+		})
+
+		// reconcile files with file offsets
+		// TODO cancel goroutines that are deleted
+		added, _ := reconcileFileOffsets(files, fileOffsets)
+
+		for _, file := range added {
+			offset := fileOffsets[file]
+			go func() {
+				metadata, err := parseMetadata(file)
+				if err != nil { panic(err) }
+				err = fileReader(ctx, root, file, offset, out, metadata)
+				if err != nil { 
+					// file was deleted, no need to process it anymore
+					if errors.Is(err, fs.ErrNotExist) {
+						log.Println("handled not found error", err)
+						return
+					}
+
+					panic(err)
+				}
+			}()
+		}
+
+		time.Sleep(time.Second)
+	}
+}
+
+type readerResult struct {
+	Metadata Metadata
+	File string
+	Offset int64
+	Reader io.Reader
+}
+
+func fileReader(
+	ctx context.Context,
+	root, file string,
+	offset int64,
+	out chan<- readerResult,
+	metadata Metadata,
+) error {
+	oldOffset := offset
+	for {
+		offset, r, err := readerAt(ctx, root + "/" + file, oldOffset)
+		if oldOffset == offset {
+			time.Sleep(time.Second)
+			continue
+		}
+		oldOffset = offset
+		if err != nil { return err }
+		out <- readerResult{
+			Metadata: metadata,
+			File: file,
+			Offset: offset,
+			Reader: r,
 		}
 	}
 }
@@ -48,12 +141,12 @@ func configureProvider(ctx context.Context, endpoint string) (*sdklog.LoggerProv
 	return provider, nil
 }
 
-func handle(ctx context.Context, logger otellog.Logger, log *LogWithMetadata) {
+func handle(ctx context.Context, logger otellog.Logger, metadata Metadata, log CriLog) {
 	record := otellog.Record{}
 	// TODO parse this from the log itself
 	var sev otellog.Severity
 	var sevText string
-	if log.Log.Stream == Stderr {
+	if log.Stream == Stderr {
 		sev = otellog.SeverityError1
 		sevText = "ERROR"
 	} else {
@@ -63,117 +156,63 @@ func handle(ctx context.Context, logger otellog.Logger, log *LogWithMetadata) {
 	record.SetSeverity(sev)
 	record.SetSeverityText(sevText)
 
-	record.SetTimestamp(log.Log.Timestamp)
+	record.SetTimestamp(log.Timestamp)
 	record.SetObservedTimestamp(time.Now())
 
-	record.SetBody(otellog.StringValue(log.Log.Content))
+	record.SetBody(otellog.StringValue(log.Content))
 
 	record.AddAttributes(
-		otellog.String("k8s.namespace.name", log.Metadata.Namespace),
-		otellog.String("k8s.pod.name", log.Metadata.PodName),
-		otellog.String("k8s.pod.uid", log.Metadata.PodId),
-		otellog.String("k8s.container.name", log.Metadata.Container),
-		otellog.Int("k8s.container.restart_count", log.Metadata.Restarts),
+		otellog.String("k8s.namespace.name", metadata.Namespace),
+		otellog.String("k8s.pod.name", metadata.PodName),
+		otellog.String("k8s.pod.uid", metadata.PodId),
+		otellog.String("k8s.container.name", metadata.Container),
+		otellog.Int("k8s.container.restart_count", metadata.Restarts),
 	)
 
 	logger.Emit(ctx, record)
 }
 
-func createReaderRoutines(ctx context.Context, base string, out chan<- *LogWithMetadata) (error) {
-	d, err := os.Open(base)
-	if err != nil { return err }
-	defer d.Close()
-
-	// TODO somewhere in here create a watch on the /var/lib/pods directory for new pods and containers
-	// get pod refs /var/log/pods
-	podNames, err := d.Readdirnames(-1)
-	if err != nil { return err }
-
-	for _, name := range podNames {
-		// var/log/pods/<pod ref>/<container-name>/<instance#>.log
-		podDir := base + "/" + name
-		pd, err := os.Open(podDir)
-		if err != nil { return err }
-		defer pd.Close()
-
-		// get containers in the pod
-		cs, err := pd.Readdirnames(-1)
-		if err != nil { return err }
-		for _, c := range cs {
-			// read log file of container
-			cDir, err := os.Open(podDir + "/" + c)
-			if err != nil { return err }
-			defer cDir.Close()
-
-			instances, err := cDir.Readdirnames(-1)
-			if len(instances) < 1 { continue }
-			log := podDir + "/" + c + "/" + instances[0] // TODO verify k8s will only create 1 file in this dir
-			restarts, err := strconv.Atoi(strings.Split(instances[0], ".")[0])
-			if err != nil { return err }
-			metadata := parseMetadata(name, c, restarts)
-			go func() {
-				err = infiniteReadFile(ctx, log, out, metadata)
-				if err != nil { panic(err) }
-			}()
-		}
-	}
-	return nil
-}
-
-func parseMetadata(pod, container string, restarts int) (Metadata) {
+func parseMetadata(file string) (Metadata, error) {
+	names := strings.Split(file, "/")
 	// default_counter_1544cea7-4641-4a3b-9ccb-702d941295b3
 	// TODO validate the structure of the dir
 	// TODO are underscores allowed in pod names?
-	chunks := strings.Split(pod, "_")
+	chunks := strings.Split(names[0], "_")
+	restarts, err := strconv.Atoi(strings.Split(names[2], ".")[0])
+	if err != nil { return Metadata{}, err }
+
 	return Metadata {
 		Namespace: chunks[0],
 		PodName: chunks[1],
 		PodId: chunks[2],
-		Container: container,
+		Container: names[1],
 		Restarts: restarts,
-	}
+	}, nil
 }
 
-func infiniteReadFile(
-	ctx context.Context,
-	filename string,
-	out chan<- *LogWithMetadata,
-	metadata Metadata,
-) (error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return err
+func reconcileFileOffsets(files map[string]interface{}, fileOffsets map[string]int64) (added, deleted []string) {
+	added = make([]string, 0, 10)
+	deleted = make([]string, 0, 10)
+	// TODO there's gotta be a better way
+	// remove deleted files
+	// this has to come first, new files are added with an offset of 0
+	for k, _ := range fileOffsets {
+		if f := files[k]; f == nil {
+			fmt.Println("removing file offset ", k)
+			delete(fileOffsets, k)
+			deleted = append(deleted, k)
+		}
 	}
-	defer f.Close()
+	// add new files
+	for k, _ := range files {
+		if f := fileOffsets[k]; f == 0 {
+			fmt.Println("found new file ", k)
+			fileOffsets[k] = 0
+			added = append(added, k)
+		}
+	}
 
-	for {
-		s := bufio.NewScanner(f)
-		// read lines from file and prints the parsed CriLog
-		for s.Scan() {
-			txt := s.Text()
-			if txt == "" { continue }
-			criLog, err := parseLog(txt)
-			// TODO think about recovering from error here
-			if err != nil { return err }
-			out <- &LogWithMetadata {
-				Log: criLog,
-				Metadata: metadata,
-			}
-		}
-		// error out if err != EOF
-		if err := s.Err(); err != nil {
-			return err
-		}
-		// listen for context clues
-		select {
-		case <- ctx.Done():
-			return ctx.Err()
-		default:
-			// wait for more logs
-			time.Sleep(1 * time.Second)
-		}
-	}
-	return nil
+	return 
 }
 
 type LogWithMetadata struct {
