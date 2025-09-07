@@ -30,7 +30,7 @@ func main() {
 	fSystem := os.DirFS(root)
 	// file offsets will live outside hot loop, eventually connected to some sort of persistant database
 	// offset is in bytes
-	refs := make(map[string]int64)
+	refs := make(map[string]*fileRef)
 
 	go func() {
 		provider, err := configureProvider(ctx, "grafana:4317")
@@ -45,7 +45,7 @@ func main() {
 				log.Println("got messsage from", result.File)
 				// TODO this is really bad, change it be better
 				// save current file offsets
-				refs[result.File] = result.Offset
+				refs[result.File].Offset = result.Offset
 
 				s := bufio.NewScanner(result.Reader)
 				for s.Scan() {
@@ -79,7 +79,7 @@ func main() {
 		added, _ := reconcileFileOffsets(files, refs)
 
 		for _, file := range added {
-			offset := refs[file]
+			offset := refs[file].Offset
 			go func() {
 				metadata, err := parseMetadata(file)
 				if err != nil { panic(err) }
@@ -227,7 +227,7 @@ func parseMetadata(file string) (Metadata, error) {
 	}, nil
 }
 
-func reconcileFileOffsets(files map[string]interface{}, refs map[string]int64) (added, deleted []string) {
+func reconcileFileOffsets(files map[string]interface{}, refs map[string]*fileRef) (added, deleted []string) {
 	added = make([]string, 0, 10)
 	deleted = make([]string, 0, 10)
 	// TODO there's gotta be a better way
@@ -241,11 +241,14 @@ func reconcileFileOffsets(files map[string]interface{}, refs map[string]int64) (
 		}
 	}
 	// add new files
-	for k, _ := range files {
-		if f := refs[k]; f == 0 {
-			fmt.Println("found new file ", k)
-			refs[k] = 0
-			added = append(added, k)
+	for f, _ := range files {
+		if r := refs[f]; r == nil {
+			fmt.Println("found new file ", f)
+			refs[f] = &fileRef{
+				File: f,
+				Offset: 0,
+			}
+			added = append(added, f)
 		}
 	}
 
