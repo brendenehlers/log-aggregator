@@ -30,7 +30,7 @@ func main() {
 	fSystem := os.DirFS(root)
 	// file offsets will live outside hot loop, eventually connected to some sort of persistant database
 	// offset is in bytes
-	fileOffsets := make(map[string]int64)
+	refs := make(map[string]int64)
 
 	go func() {
 		provider, err := configureProvider(ctx, "grafana:4317")
@@ -45,7 +45,7 @@ func main() {
 				log.Println("got messsage from", result.File)
 				// TODO this is really bad, change it be better
 				// save current file offsets
-				fileOffsets[result.File] = result.Offset
+				refs[result.File] = result.Offset
 
 				s := bufio.NewScanner(result.Reader)
 				for s.Scan() {
@@ -76,10 +76,10 @@ func main() {
 
 		// reconcile files with file offsets
 		// TODO cancel goroutines that are deleted
-		added, _ := reconcileFileOffsets(files, fileOffsets)
+		added, _ := reconcileFileOffsets(files, refs)
 
 		for _, file := range added {
-			offset := fileOffsets[file]
+			offset := refs[file]
 			go func() {
 				metadata, err := parseMetadata(file)
 				if err != nil { panic(err) }
@@ -190,24 +190,24 @@ func parseMetadata(file string) (Metadata, error) {
 	}, nil
 }
 
-func reconcileFileOffsets(files map[string]interface{}, fileOffsets map[string]int64) (added, deleted []string) {
+func reconcileFileOffsets(files map[string]interface{}, refs map[string]int64) (added, deleted []string) {
 	added = make([]string, 0, 10)
 	deleted = make([]string, 0, 10)
 	// TODO there's gotta be a better way
 	// remove deleted files
 	// this has to come first, new files are added with an offset of 0
-	for k, _ := range fileOffsets {
+	for k, _ := range refs {
 		if f := files[k]; f == nil {
 			fmt.Println("removing file offset ", k)
-			delete(fileOffsets, k)
+			delete(refs, k)
 			deleted = append(deleted, k)
 		}
 	}
 	// add new files
 	for k, _ := range files {
-		if f := fileOffsets[k]; f == 0 {
+		if f := refs[k]; f == 0 {
 			fmt.Println("found new file ", k)
-			fileOffsets[k] = 0
+			refs[k] = 0
 			added = append(added, k)
 		}
 	}
