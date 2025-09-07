@@ -28,22 +28,7 @@ func main() {
 		})
 
 		// reconcile files with file offsets
-		// TODO there's gotta be a better way
-		// remove deleted files
-		// this has to come first, new files are added with an offset of 0
-		for k, _ := range fileOffsets {
-			if f := files[k]; f == nil {
-				fmt.Println("removing file offset ", k)
-				delete(fileOffsets, k)
-			}
-		}
-		// add new files
-		for k, _ := range files {
-			if f := fileOffsets[k]; f == 0 {
-				fmt.Println("found new file ", k)
-				fileOffsets[k] = 0
-			}
-		}
+		fileOffsets = reconcileFileOffsets(files, fileOffsets)
 
 		for k, v := range fileOffsets {
 			fileOffsets[k] = v + 1
@@ -52,4 +37,25 @@ func main() {
 
 		time.Sleep(time.Second)
 	}
+}
+
+func reconcileFileOffsets(files map[string]interface{}, fileOffsets map[string]int) (map[string]int) {
+	// TODO there's gotta be a better way
+	// remove deleted files
+	// this has to come first, new files are added with an offset of 0
+	for k, _ := range fileOffsets {
+		if f := files[k]; f == nil {
+			fmt.Println("removing file offset ", k)
+			delete(fileOffsets, k)
+		}
+	}
+	// add new files
+	for k, _ := range files {
+		if f := fileOffsets[k]; f == 0 {
+			fmt.Println("found new file ", k)
+			fileOffsets[k] = 0
+		}
+	}
+
+	return fileOffsets
 }
